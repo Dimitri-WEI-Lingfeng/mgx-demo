@@ -20,8 +20,8 @@ help:
 	@echo ""
 
 install:
-	@echo "📦 Installing Python dependencies..."
-	pip install -e .
+	@echo "📦 Installing Python dependencies (including dev/test extras)..."
+	uv sync --all-extras
 	@echo "📦 Installing frontend dependencies..."
 	cd frontend && pnpm install
 	@echo "✅ Installation complete"
