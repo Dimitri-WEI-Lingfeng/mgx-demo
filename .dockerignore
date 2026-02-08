@@ -1,0 +1,33 @@
+# Python
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+.mypy_cache
+*.egg-info
+dist
+build
+
+# Workspaces and IDE
+workspaces
+.git
+.gitignore
+.env
+.env.local
+.env.*.local
+
+# Frontend (not needed for MGX backend image)
+frontend
+
+# Docs and misc (reduce build context)
+*.md
+!README.md
+change-logs
+docs
+
+# Test and dev
+.pytest_cache
+.coverage
+htmlcov

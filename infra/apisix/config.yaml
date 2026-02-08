@@ -1,0 +1,27 @@
+# Traditional 模式：启用 Admin API (9180)，mgx-api 可通过 API 动态创建 /apps/* 路由
+# data_plane + yaml 模式下 Admin API 不监听，导致 create_or_update_route 无效、dev URL 404
+apisix:
+  node_listen: 9080
+  enable_admin: true
+  # 部分版本从此处读取，与 deployment.admin.admin_key 保持一致
+  admin_key:
+    - name: "admin"
+      key: edd1c9f034335f136f87ad84b625c8f1
+      role: admin
+
+deployment:
+  role: traditional
+  role_traditional:
+    config_provider: etcd
+  admin:
+    allow_admin:
+      - 0.0.0.0/0   # 允许 mgx-api 等容器调用 Admin API；生产环境应限制 IP
+    admin_key:
+      - name: "admin"
+        key: edd1c9f034335f136f87ad84b625c8f1
+        role: admin
+  etcd:
+    host:
+      - "http://etcd:2379"
+    prefix: "/apisix"
+    timeout: 30

@@ -1,0 +1,80 @@
+============================================================
+实验 01: LangGraph astream 输出格式
+============================================================
+
+调用 astream(stream_mode=['updates', 'messages'], subgraphs=True)
+
+--- Chunk #1 ---
+  type(stream_output): <class 'tuple'>
+  len(stream_output): 3
+  namespace: () (type=tuple)
+  stream_mode: messages
+  chunk type: tuple
+    message type: AIMessageChunk
+    message.id: lc_run--019c3861-a496-7f92-be0d-ccca8b4a339f
+    message.content (first 50): [
+    metadata: {'langgraph_step': 1, 'langgraph_node': 'boss', 'langgraph_triggers': ('branch:to:boss',), 'langgraph_path': ('__pregel_pull', 'boss'), 'langgraph_checkpoint_ns': 'boss:7f333611-975b-4630-54c7-9dbac1da2b31', 'checkpoint_ns': 'boss:7f333611-975b-4630-54c7-9dbac1da2b31', 'ls_provider': 'fakelistchatmodel', 'ls_model_type': 'chat'}
+
+--- Chunk #2 ---
+  type(stream_output): <class 'tuple'>
+  len(stream_output): 3
+  namespace: () (type=tuple)
+  stream_mode: messages
+  chunk type: tuple
+    message type: AIMessageChunk
+    message.id: lc_run--019c3861-a496-7f92-be0d-ccca8b4a339f
+    message.content (first 50): B
+    metadata: {'langgraph_step': 1, 'langgraph_node': 'boss', 'langgraph_triggers': ('branch:to:boss',), 'langgraph_path': ('__pregel_pull', 'boss'), 'langgraph_checkpoint_ns': 'boss:7f333611-975b-4630-54c7-9dbac1da2b31', 'checkpoint_ns': 'boss:7f333611-975b-4630-54c7-9dbac1da2b31', 'ls_provider': 'fakelistchatmodel', 'ls_model_type': 'chat'}
+
+--- Chunk #3 ---
+  type(stream_output): <class 'tuple'>
+  len(stream_output): 3
+  namespace: () (type=tuple)
+  stream_mode: messages
+  chunk type: tuple
+    message type: AIMessageChunk
+    message.id: lc_run--019c3861-a496-7f92-be0d-ccca8b4a339f
+    message.content (first 50): o
+    metadata: {'langgraph_step': 1, 'langgraph_node': 'boss', 'langgraph_triggers': ('branch:to:boss',), 'langgraph_path': ('__pregel_pull', 'boss'), 'langgraph_checkpoint_ns': 'boss:7f333611-975b-4630-54c7-9dbac1da2b31', 'checkpoint_ns': 'boss:7f333611-975b-4630-54c7-9dbac1da2b31', 'ls_provider': 'fakelistchatmodel', 'ls_model_type': 'chat'}
+
+--- Chunk #4 ---
+  type(stream_output): <class 'tuple'>
+  len(stream_output): 3
+  namespace: () (type=tuple)
+  stream_mode: messages
+  chunk type: tuple
+    message type: AIMessageChunk
+    message.id: lc_run--019c3861-a496-7f92-be0d-ccca8b4a339f
+    message.content (first 50): s
+    metadata: {'langgraph_step': 1, 'langgraph_node': 'boss', 'langgraph_triggers': ('branch:to:boss',), 'langgraph_path': ('__pregel_pull', 'boss'), 'langgraph_checkpoint_ns': 'boss:7f333611-975b-4630-54c7-9dbac1da2b31', 'checkpoint_ns': 'boss:7f333611-975b-4630-54c7-9dbac1da2b31', 'ls_provider': 'fakelistchatmodel', 'ls_model_type': 'chat'}
+
+--- Chunk #5 ---
+  type(stream_output): <class 'tuple'>
+  len(stream_output): 3
+  namespace: () (type=tuple)
+  stream_mode: messages
+  chunk type: tuple
+    message type: AIMessageChunk
+    message.id: lc_run--019c3861-a496-7f92-be0d-ccca8b4a339f
+    message.content (first 50): s
+    metadata: {'langgraph_step': 1, 'langgraph_node': 'boss', 'langgraph_triggers': ('branch:to:boss',), 'langgraph_path': ('__pregel_pull', 'boss'), 'langgraph_checkpoint_ns': 'boss:7f333611-975b-4630-54c7-9dbac1da2b31', 'checkpoint_ns': 'boss:7f333611-975b-4630-54c7-9dbac1da2b31', 'ls_provider': 'fakelistchatmodel', 'ls_model_type': 'chat'}
+
+--- Chunk #6 ---
+  type(stream_output): <class 'tuple'>
+  len(stream_output): 3
+  namespace: () (type=tuple)
+  stream_mode: messages
+  chunk type: tuple
+    message type: AIMessageChunk
+    message.id: lc_run--019c3861-a496-7f92-be0d-ccca8b4a339f
+    message.content (first 50): ]
+    metadata: {'langgraph_step': 1, 'langgraph_node': 'boss', 'langgraph_triggers': ('branch:to:boss',), 'langgraph_path': ('__pregel_pull', 'boss'), 'langgraph_checkpoint_ns': 'boss:7f333611-975b-4630-54c7-9dbac1da2b31', 'checkpoint_ns': 'boss:7f333611-975b-4630-54c7-9dbac1da2b31', 'ls_provider': 'fakelistchatmodel', 'ls_model_type': 'chat'}
+
+--- Chunk #7 ---
+  type(stream_output): <class 'tuple'>
+  len(stream_output): 3
+  namespace: () (type=tuple)
+  stream_mode: messages
+  chunk type: tuple
+    message type: AIMessageChunk
+    message.id: lc_run--019c3861-a496-7f92-be0d-ccca8b4a339f

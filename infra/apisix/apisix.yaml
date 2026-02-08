@@ -1,0 +1,42 @@
+routes:
+  # MGX API routes
+  - id: mgx-api
+    uri: /api/*
+    name: "MGX API"
+    methods:
+      - GET
+      - POST
+      - PUT
+      - DELETE
+      - PATCH
+      - OPTIONS
+    upstream:
+      type: roundrobin
+      nodes:
+        "mgx-api:8000": 1
+    plugins:
+      proxy-rewrite:
+        regex_uri:
+          - "^/api/(.*)$"
+          - "/$1"
+
+  # OAuth2 Provider routes
+  - id: oauth2-provider
+    uri: /oauth2/*
+    name: "OAuth2 Provider"
+    methods:
+      - GET
+      - POST
+      - OPTIONS
+    upstream:
+      type: roundrobin
+      nodes:
+        "oauth2-provider:8001": 1
+    plugins:
+      proxy-rewrite:
+        regex_uri:
+          - "^/oauth2/(.*)$"
+          - "/$1"
+
+# Dynamic routes for /apps/* will be added by mgx-api via Admin API
+#END

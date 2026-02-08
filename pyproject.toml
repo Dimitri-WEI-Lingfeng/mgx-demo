@@ -1,0 +1,65 @@
+[project]
+name = "mgx-demo"
+version = "0.1.0"
+description = "MGX: A PaaS with agent generated web app"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+    "python-jose[cryptography]>=3.3.0",
+    "passlib[bcrypt]>=1.7.4",
+    "bcrypt>=4.0.0,<5.0.0",
+    "python-multipart>=0.0.12",
+    "motor>=3.6.0",
+    "redis>=5.0",
+    "celery>=5.4.0",
+    "httpx>=0.27.2",
+    "pyyaml>=6.0",
+    "docker>=7.1.0",
+    "aiofiles>=23.2.1",
+    "langchain>=1.2.0",
+    "langchain-core>=0.3.0",
+    "openai>=2.16.0",
+    "langchain-openai>=1.1.7",
+    "langchain-community>=0.4",
+    "langchain-classic>=1.0.0",
+    "sse-starlette>=2.0.0",
+    "langgraph>=1.0.7",
+    "langfuse>=2.0.0",
+    "chromadb>=0.4.0",
+    "tiktoken>=0.5.0",
+    "loguru>=0.7.3",
+    "rich>=13.0.0",
+    "mcp[cli]>=1.0.0",
+]
+
+[project.scripts]
+mgx-api = "mgx_api.cli:run_api"
+oauth2-provider = "oauth2_provider.cli:run_provider"
+agent-worker = "agent_scheduler.cli:run_worker"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "httpx>=0.27.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+pythonpath = ["src"]
+addopts = "-v"
+
+[build-system]
+requires = ["setuptools>=70.0.0", "wheel>=0.44.0"]
+build-backend = "setuptools.build_meta"
+
+
+[[tool.uv.index]]
+name = "tsinghua"
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+default = true

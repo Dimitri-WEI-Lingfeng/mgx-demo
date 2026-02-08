@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  nextjs-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mgx-dev-nextjs:latest
+    container_name: mgx-nextjs-dev
+    ports:
+      - "3000:3000"  # Next.js 开发服务器
+      - "2222:22"    # SSH 服务
+    volumes:
+      - ./workspace:/workspace  # 挂载工作目录
+    environment:
+      - NODE_ENV=development
+      - NEXT_TELEMETRY_DISABLED=1
+    restart: unless-stopped
+    # 可选：资源限制
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+        reservations:
+          cpus: '1'
+          memory: 2G

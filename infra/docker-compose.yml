@@ -1,0 +1,149 @@
+version: '3.8'
+
+services:
+  # MongoDB
+  mongodb:
+    image: mongo:7
+    container_name: mgx-mongodb
+    ports:
+      - "27017:27017"
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
+    volumes:
+      - mongodb_data:/data/db
+    networks:
+      - mgx-network
+
+  # Redis (Celery broker)
+  redis:
+    image: redis:7-alpine
+    container_name: mgx-redis
+    ports:
+      - "6379:6379"
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
+    networks:
+      - mgx-network
+
+  # Etcd - Apisix 配置中心，traditional 模式下 Admin API 依赖 etcd
+  etcd:
+    image: bitnamilegacy/etcd:3.5
+    container_name: mgx-etcd
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
+      - ALLOW_NONE_AUTHENTICATION=yes
+    ports:
+      - "2379:2379"
+    volumes:
+      - etcd_data:/bitnami/etcd
+    networks:
+      - mgx-network
+
+  # Apisix Gateway - traditional 模式启用 Admin API，mgx-api 可动态创建 /apps/* 路由
+  apisix:
+    image: apache/apisix:3.7.0-debian
+    container_name: mgx-apisix
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
+    ports:
+      - "9080:9080"    # HTTP
+      - "9180:9180"    # Admin API
+    volumes:
+      - ./apisix/config.yaml:/usr/local/apisix/conf/config.yaml:ro
+    networks:
+      - mgx-network
+    depends_on:
+      - etcd
+
+  # OAuth2 Provider - 与 mgx-api 共用镜像，不同 entrypoint
+  oauth2-provider:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.mgx
+    container_name: mgx-oauth2-provider
+    ports:
+      - "8001:8001"
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
+      - MONGODB_URL=mongodb://mongodb:27017
+      - JWT_SECRET_KEY=dev-secret-please-change
+    volumes:
+      - ../src:/app/src:ro
+    networks:
+      - mgx-network
+    depends_on:
+      - mongodb
+    command: uvicorn oauth2_provider.main:app --host 0.0.0.0 --port 8001
+
+  # MGX API - 需要 Docker 权限以创建/管理 dev 容器、workspace 等
+  mgx-api:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.mgx
+    container_name: mgx-api
+    ports:
+      - "8000:8000"
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
+      - MONGODB_URL=mongodb://mongodb:27017
+      - REDIS_URL=redis://redis:6379/0
+      - OAUTH2_PROVIDER_URL=http://oauth2-provider:8001
+      - WORKSPACES_ROOT=/workspaces
+      # Use absolute path dynamically resolved from compose file location
+      - HOST_WORKSPACES_ROOT=${PWD}/workspaces
+      - APISIX_ADMIN_URL=http://apisix:9180
+      - APISIX_ADMIN_KEY=${APISIX_ADMIN_KEY:-edd1c9f034335f136f87ad84b625c8f1}
+      # MCP 鉴权：主用 session_id；可选 MGX_AGENT_API_KEY 用于兼容/测试（默认 dev-agent-api-key 便于本地测试）
+      - MGX_AGENT_API_KEY=${MGX_AGENT_API_KEY:-dev-agent-api-key}
+    volumes:
+      - ../src:/app/src:ro
+      - ../workspaces:/workspaces
+      - ./apisix/apisix.yaml:/app/apisix.yaml:ro   # ensure_base_routes 从此文件同步到 etcd
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - mgx-network
+    depends_on:
+      - mongodb
+      - redis
+      - oauth2-provider
+      - apisix   # ensure_base_routes 需调用 Apisix Admin API
+    command: uvicorn mgx_api.main:app --host 0.0.0.0 --port 8000
+
+  # Celery Worker (Agent Runtime) - 需要 Docker 权限以创建 agent 执行容器
+  celery-worker:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.mgx
+    container_name: mgx-celery-worker
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
+      - MONGODB_URL=mongodb://mongodb:27017
+      - REDIS_URL=redis://redis:6379/0
+      - WORKSPACES_ROOT=/workspaces
+      # 创建 agent 容器时 bind mount 需要宿主机路径（Docker daemon 在 host 上执行）
+      - HOST_WORKSPACES_ROOT=${PWD}/workspaces
+      # Agent 通过 MCP 调用 mgx-api 所需配置（scheduler 创建容器时注入 session_id 作为 API Key）
+      - MGX_API_URL=http://mgx-api:8000
+      # LLM API 配置（Agent 容器内 ChatOpenAI 必需，支持 OpenAI/DashScope/OpenRouter 等）
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
+      - MGX_NETWORK=infra_mgx-network
+      - MGX_MCP_PATH=/mcp
+    volumes:
+      - ../src:/app/src:ro
+      - ../workspaces:/workspaces
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - mgx-network
+    depends_on:
+      - redis
+      - mongodb
+    command: celery -A scheduler.tasks worker --loglevel=info
+
+networks:
+  mgx-network:
+    driver: bridge
+
+volumes:
+  mongodb_data:
+  etcd_data:

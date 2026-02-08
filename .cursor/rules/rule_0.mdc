@@ -1,0 +1,9 @@
+---
+alwaysApply: true
+---
+
+项目需求和架构文档在： docs/project_description.md
+
+change logs 在：change-logs 目录
+
+你可以在项目根目录使用 uv run 来运行 python 脚本
