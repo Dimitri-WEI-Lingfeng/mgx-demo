@@ -2,6 +2,7 @@
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from mgx_api.api import create_api_router
 from mgx_api.dao import EventDAO, MessageDAO
@@ -51,6 +52,14 @@ app = FastAPI(
     description="MGX Platform API - workspace, apps, deployment management",
     version="0.1.0",
     lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Include all API routes

@@ -330,11 +330,53 @@ class TestRunTeamAgentWithFakeLLM:
 
         messages = agent_context.message_store.get_messages()
         assert len(messages) >= 1
-        # fake tool_calls 已触发：LLM 返回 list_files/read_file 等，agent 执行后输出 "工具消息"
-        # （run_agent 的 messages 流中 ToolMessage 仅打印未持久化，此处验证流程完成即可）
         event_types = [e.get("event_type") for e in agent_context.event_store.get_events()]
         assert "agent_start" in event_types
         assert "finish" in event_types
+
+    async def test_run_team_agent_tool_calls_and_tool_message_in_events(
+        self,
+        agent_context,
+        mock_get_agent_llm_with_tool_calls,
+    ):
+        """验证 tool_calls 和 ToolMessage 能正确发送到 event（前端可收到）。
+
+        subgraph 结构下，MESSAGE_COMPLETE 事件应包含 tool_calls 和 tool_call_id。
+        """
+        from agents.run_agent import run_team_agent_with_streaming
+
+        with patch(
+            "agents.web_app_team.team.get_agent_llm",
+            mock_get_agent_llm_with_tool_calls,
+        ):
+            await run_team_agent_with_streaming(
+                context=agent_context,
+                framework="nextjs",
+                prompt="创建一个待办应用",
+            )
+
+        events = agent_context.event_store.get_events()
+        message_complete_events = [
+            e for e in events if e.get("event_type") == "message_complete"
+        ]
+
+        # 至少应有一条 message_complete 含 tool_calls（assistant 调用工具时）
+        events_with_tool_calls = [
+            e for e in message_complete_events
+            if (e.get("data") or {}).get("tool_calls")
+        ]
+        # 至少应有一条 message_complete 含 tool_call_id（tool 角色的 result）
+        events_with_tool_call_id = [
+            e for e in message_complete_events
+            if (e.get("data") or {}).get("tool_call_id")
+        ]
+
+        assert len(events_with_tool_calls) >= 1, (
+            "应有至少一条 message_complete 含 tool_calls，供前端展示"
+        )
+        assert len(events_with_tool_call_id) >= 1, (
+            "应有至少一条 message_complete 含 tool_call_id（ToolMessage）"
+        )
 
     async def test_run_team_agent_emits_llm_stream_events(
         self,
@@ -359,6 +401,128 @@ class TestRunTeamAgentWithFakeLLM:
 
         assert "agent_start" in event_types
         assert "finish" in event_types
+
+    async def test_run_team_agent_llm_stream_and_message_complete_same_message_id(
+        self,
+        agent_context,
+        mock_get_agent_llm,
+    ):
+        """验证流式场景下 LLM_STREAM 与 MESSAGE_COMPLETE 的 message_id 一致。
+
+        同一 assistant 消息的 delta 事件与完成事件必须使用相同 message_id，
+        否则前端无法正确将流式内容与最终消息关联。
+        """
+        from agents.run_agent import run_team_agent_with_streaming
+
+        with patch(
+            "agents.web_app_team.team.get_agent_llm",
+            mock_get_agent_llm,
+        ):
+            await run_team_agent_with_streaming(
+                context=agent_context,
+                framework="nextjs",
+                prompt="创建一个简单的待办应用",
+            )
+
+        events = agent_context.event_store.get_events()
+        llm_stream_events = [e for e in events if e.get("event_type") == "llm_stream"]
+        message_complete_events = [
+            e for e in events if e.get("event_type") == "message_complete"
+        ]
+
+        stream_message_ids = {
+            e["message_id"] for e in llm_stream_events if e.get("message_id")
+        }
+        complete_message_ids = {
+            e["message_id"] for e in message_complete_events if e.get("message_id")
+        }
+
+        assert len(stream_message_ids) >= 1, "应有至少一条流式消息"
+        # 流式消息的 message_id 应在 MESSAGE_COMPLETE 中存在（修复前会生成新 UUID 导致不匹配）
+        matching_ids = stream_message_ids & complete_message_ids
+        assert len(matching_ids) >= 1, (
+            f"至少应有一条 LLM_STREAM 的 message_id 与 MESSAGE_COMPLETE 一致，"
+            f"stream_ids={stream_message_ids}, complete_ids={complete_message_ids}"
+        )
+        # 大部分流式消息的 id 应与完成事件匹配（允许少量 tool_call-only 等边缘情况）
+        assert len(matching_ids) >= len(stream_message_ids) * 0.5, (
+            f"多数 LLM_STREAM message_id 应在 MESSAGE_COMPLETE 中存在，"
+            f"匹配 {len(matching_ids)}/{len(stream_message_ids)}，缺失: {stream_message_ids - complete_message_ids}"
+        )
+
+    async def test_run_team_agent_history_loaded_on_second_run(
+        self,
+        agent_context,
+        mock_get_agent_llm,
+    ):
+        """第二次运行时，加载的历史消息与首次保存一致。"""
+        from agents.run_agent import run_team_agent_with_streaming
+        from shared.schemas import Message
+        import time
+
+        # 第一次运行
+        with patch(
+            "agents.web_app_team.team.get_agent_llm",
+            mock_get_agent_llm,
+        ):
+            result1 = await run_team_agent_with_streaming(
+                context=agent_context,
+                framework="nextjs",
+                prompt="第一轮需求",
+            )
+        assert result1["status"] == "success"
+
+        messages_after_run1 = agent_context.message_store.get_messages()
+        assert len(messages_after_run1) >= 2
+        first_user_content = next(
+            (m.get("content", "") for m in messages_after_run1 if m.get("role") == "user"),
+            "",
+        )
+        assert "第一轮需求" in str(first_user_content)
+
+        # 手动创建并存储第二条用户消息（模拟用户发送第二轮）
+        second_user_msg = Message(
+            message_id="msg-second-user",
+            session_id=agent_context.session_id,
+            role="user",
+            content="第二轮需求",
+            timestamp=time.time() + 1,
+        )
+        await agent_context.message_store.create_message(second_user_msg)
+
+        # 第二次运行：传入 last_user_msg，触发加载历史
+        captured_history = []
+
+        from agents.web_app_team.state import create_initial_state as _orig_create_initial_state
+
+        def capture_create_initial_state(workspace_id, framework, user_prompt, history_messages=None):
+            if history_messages:
+                captured_history.extend(history_messages)
+            return _orig_create_initial_state(workspace_id, framework, user_prompt, history_messages)
+
+        with patch(
+            "agents.web_app_team.team.get_agent_llm",
+            mock_get_agent_llm,
+        ), patch(
+            "agents.run_agent.create_initial_state",
+            side_effect=capture_create_initial_state,
+        ):
+            result2 = await run_team_agent_with_streaming(
+                context=agent_context,
+                framework="nextjs",
+                prompt=None,
+                last_user_msg=second_user_msg,
+            )
+
+        assert result2["status"] == "success"
+        assert len(captured_history) >= 1
+        # 验证历史中含第一轮用户内容
+        history_contents = [
+            getattr(m, "content", m) if hasattr(m, "content") else str(m)
+            for m in captured_history
+        ]
+        combined = " ".join(str(c) for c in history_contents)
+        assert "第一轮需求" in combined
 
     async def test_run_team_agent_error_handling(
         self,

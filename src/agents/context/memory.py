@@ -63,6 +63,41 @@ class InMemoryMessageStore(MessageStore):
         """获取所有消息。"""
         return self.messages.copy()
 
+    async def get_session_messages_paginated(
+        self,
+        session_id: str,
+        limit: int = 100,
+        last_message_id: str | None = None,
+        before_message_id: str | None = None,
+    ) -> list[Message]:
+        """分页获取会话消息（内存实现）。"""
+        filtered = [m for m in self.messages if m.get("session_id") == session_id]
+        if not filtered:
+            return []
+
+        if before_message_id is not None:
+            before_msg = next((m for m in filtered if m.get("message_id") == before_message_id), None)
+            if before_msg is None:
+                filtered = sorted(filtered, key=lambda x: x.get("timestamp", 0), reverse=True)[:limit]
+                return [Message(**m) for m in reversed(filtered)]
+            ts = before_msg.get("timestamp", 0)
+            filtered = [m for m in filtered if m.get("timestamp", 0) < ts]
+            filtered = sorted(filtered, key=lambda x: x.get("timestamp", 0), reverse=True)[:limit]
+            return [Message(**m) for m in reversed(filtered)]
+
+        if last_message_id is None:
+            filtered = sorted(filtered, key=lambda x: x.get("timestamp", 0), reverse=True)[:limit]
+            return [Message(**m) for m in reversed(filtered)]
+
+        start_msg = next((m for m in filtered if m.get("message_id") == last_message_id), None)
+        if start_msg is None:
+            filtered = sorted(filtered, key=lambda x: x.get("timestamp", 0), reverse=True)[:limit]
+            return [Message(**m) for m in reversed(filtered)]
+        ts = start_msg.get("timestamp", 0)
+        filtered = [m for m in filtered if m.get("timestamp", 0) >= ts]
+        filtered = sorted(filtered, key=lambda x: x.get("timestamp", 0))[:limit]
+        return [Message(**m) for m in filtered]
+
 
 class InMemoryContext(AgentContext):
     """内存模式上下文 - 用于本地开发。

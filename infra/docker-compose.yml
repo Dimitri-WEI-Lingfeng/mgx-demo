@@ -109,6 +109,20 @@ services:
       - apisix   # ensure_base_routes 需调用 Apisix Admin API
     command: uvicorn mgx_api.main:app --host 0.0.0.0 --port 8000
 
+  # 前端静态服务 - 端口 8080（开发服务为 5173）
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+      args:
+        # 前端请求后端时使用的 base_url，APISIX 网关地址
+        VITE_API_BASE: ${VITE_API_BASE:-http://localhost:9080}
+    container_name: mgx-frontend
+    ports:
+      - "8080:8080"
+    networks:
+      - mgx-network
+
   # Celery Worker (Agent Runtime) - 需要 Docker 权限以创建 agent 执行容器
   celery-worker:
     build:

@@ -52,6 +52,9 @@ export function processSSELine(
   const timestamp = data.timestamp as number | undefined;
   const eventType = normalizeEventType(data.event_type as string);
 
+  console.log('eventType', eventType);
+  console.log('data', data);
+
   if (eventType === 'node_start') {
     const nodeName = (data.node_name as string) ?? '';
     return { type: 'node_name', currentNodeName: nodeName };
@@ -60,9 +63,6 @@ export function processSSELine(
   if (eventType === 'llm_stream') {
     const delta = (data.delta as string) ?? '';
     const contentType = (data.content_type as string) ?? 'text';
-    // tool_call 增量暂不追加到消息文本，由 MESSAGE_COMPLETE 时 tool_calls 展示
-    if (contentType === 'tool_call' || !delta) return null;
-
     const agentName =
       currentNodeName ||
       ((data.namespace as string[])?.[0]?.split(':')[0]) ||
@@ -70,11 +70,95 @@ export function processSSELine(
     const ts = timestamp ?? getNow();
     const backendMessageId = data.message_id as string | undefined;
 
+    // tool_call 流式处理：累积 name、id、args（使用 __raw）
+    if (contentType === 'tool_call') {
+      const toolCallIndex = (data.tool_call_index as number) ?? 0;
+      const toolCallName = (data.tool_call_name as string) ?? '';
+      const toolCallId = (data.tool_call_id as string) ?? '';
+      const hasUpdate = delta || toolCallName || toolCallId;
+      if (!hasUpdate) return null;
+
+      return {
+        type: 'messages',
+        updater: (prev) => {
+          const lastMsg = prev[prev.length - 1];
+          const shouldAppend =
+            lastMsg &&
+            lastMsg.role === 'assistant' &&
+            (!backendMessageId || lastMsg.message_id === backendMessageId);
+
+          const updateToolCall = (
+            tc: { id: string; name: string; args: Record<string, unknown> }
+          ) => {
+            const next: { id: string; name: string; args: Record<string, unknown> } = {
+              id: toolCallId || tc.id || `stream-tc-${toolCallIndex}-${Date.now()}`,
+              name: toolCallName || tc.name,
+              args: { ...tc.args },
+            };
+            // 仅当 delta 为 args（JSON 片段）时追加：以 { 开头，或继续已有 __raw
+            const raw = (tc.args?.__raw as string) ?? '';
+            const isArgsDelta =
+              delta &&
+              (delta.trim().startsWith('{') || (raw.length > 0 && raw.trim().startsWith('{')));
+            if (isArgsDelta) {
+              next.args = { __raw: raw + delta };
+            }
+            return next;
+          };
+
+          if (shouldAppend) {
+            const toolCalls = [...(lastMsg.tool_calls ?? [])];
+            while (toolCalls.length <= toolCallIndex) {
+              toolCalls.push({
+                id: toolCallId || `stream-tc-${toolCallIndex}-${Date.now()}`,
+                name: '',
+                args: {},
+              });
+            }
+            const existing = toolCalls[toolCallIndex];
+            toolCalls[toolCallIndex] = updateToolCall(existing);
+            return [
+              ...prev.slice(0, -1),
+              { ...lastMsg, tool_calls: toolCalls },
+            ];
+          }
+
+          // 创建新消息（仅 tool_call，无文本）
+          const isArgsDelta = delta && delta.trim().startsWith('{');
+          const toolCalls: Array<{ id: string; name: string; args: Record<string, unknown> }> = [];
+          for (let i = 0; i <= toolCallIndex; i++) {
+            toolCalls.push({
+              id: i === toolCallIndex ? (toolCallId || `stream-tc-${i}-${Math.floor(getNow() * 1000)}`) : '',
+              name: i === toolCallIndex ? toolCallName : '',
+              args: i === toolCallIndex && isArgsDelta ? { __raw: delta } : {},
+            });
+          }
+          return [
+            ...prev,
+            {
+              message_id:
+                backendMessageId ?? `stream-${Math.floor(getNow() * 1000)}`,
+              session_id: sessionId,
+              role: 'assistant',
+              agent_name: agentName,
+              content: '',
+              tool_calls: toolCalls,
+              send_to: [],
+              timestamp: ts,
+              metadata: {},
+            },
+          ];
+        },
+      };
+    }
+
+    // text 流式处理
+    if (!delta) return null;
+
     return {
       type: 'messages',
       updater: (prev) => {
         const lastMsg = prev[prev.length - 1];
-        // 仅当 message_id 一致时才追加，否则创建新消息（避免多节点消息合并）
         const shouldAppend =
           lastMsg &&
           lastMsg.role === 'assistant' &&
@@ -113,20 +197,56 @@ export function processSSELine(
   if (eventType === 'message_complete') {
     const messageId = data.message_id as string | undefined;
     if (messageId) {
+      // 从 event data 提取可覆盖的完整消息字段（不区分 role）
+      const overwrite: Partial<Message> = {
+        message_id: messageId,
+      };
+      if (data.content != null) overwrite.content = data.content as string;
+      if (data.role != null) overwrite.role = data.role as string;
+      if (data.agent_name != null) overwrite.agent_name = data.agent_name as string;
+      if (data.tool_call_id != null) overwrite.tool_call_id = data.tool_call_id as string;
+      if (data.tool_calls != null) overwrite.tool_calls = data.tool_calls as Message['tool_calls'];
+      if (data.parent_id != null) overwrite.parent_id = data.parent_id as string;
+      if (data.send_to != null) overwrite.send_to = data.send_to as string[];
+      if (data.metadata != null) overwrite.metadata = data.metadata as Record<string, unknown>;
+      if (timestamp != null) overwrite.timestamp = timestamp;
+
       return {
         type: 'messages',
         updater: (prev) => {
-          // 按 message_id 定位要更新的消息，避免多节点时更新错乱
-          const idx = prev.findIndex((m) => m.role === 'assistant' && m.message_id === messageId);
+          // 按 message_id 定位要更新的消息，用后端完整数据覆盖（不区分 role）
+          const idx = prev.findIndex((m) => m.message_id === messageId);
           if (idx >= 0) {
-            return prev.map((m, i) => (i === idx ? { ...m, message_id: messageId } : m));
+            return prev.map((msg, i) =>
+              i === idx ? { ...msg, ...overwrite } : msg
+            );
           }
-          // 兼容：若未找到（如临时 id），更新最后一条 assistant 消息
+          // 兼容：若未找到 message_id
           const lastMsg = prev[prev.length - 1];
-          if (lastMsg && lastMsg.role === 'assistant') {
-            return [...prev.slice(0, -1), { ...lastMsg, message_id: messageId }];
+          const isCompletingLastMessage =
+            lastMsg &&
+            (overwrite.role == null || overwrite.role === lastMsg.role);
+
+          if (isCompletingLastMessage) {
+            // 视为完成最后一条流式消息（如临时 id 被替换）
+            return [...prev.slice(0, -1), { ...lastMsg, ...overwrite }];
           }
-          return prev;
+
+          // 否则：追加新消息（如 tool 消息、或 assistant 在 user 之后）
+          const newMessage: Message = {
+            message_id: messageId,
+            session_id: sessionId,
+            parent_id: overwrite.parent_id,
+            agent_name: overwrite.agent_name,
+            role: overwrite.role ?? 'assistant',
+            content: overwrite.content ?? '',
+            tool_call_id: overwrite.tool_call_id,
+            tool_calls: overwrite.tool_calls ?? [],
+            send_to: overwrite.send_to ?? [],
+            timestamp: overwrite.timestamp ?? getNow(),
+            metadata: overwrite.metadata ?? {},
+          };
+          return [...prev, newMessage];
         },
         ...(timestamp != null && { timestamp }),
       };

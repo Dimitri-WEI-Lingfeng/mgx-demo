@@ -2,6 +2,7 @@
 import time
 
 from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
 
 from shared.database.mongodb import get_db
@@ -16,6 +17,14 @@ app = FastAPI(
     title="MGX OAuth2 Provider",
     description="JWT token issuer for MGX platform",
     version="0.1.0",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 

@@ -52,6 +52,7 @@ make up
 - Redis（Celery broker，端口 6379）
 - OAuth2 Provider（端口 8001）
 - MGX API（端口 8000）
+- Frontend（端口 8080）
 - Celery Worker（Agent Runtime）
 
 ### 3. 构建统一镜像（首次部署或代码变更后）
@@ -60,7 +61,11 @@ make up
 make build-mgx
 ```
 
-### 4. 启动前端
+### 4. 访问前端
+
+**Docker 方式**（`make up` 已包含）：访问 **http://localhost:8080**。前端通过 `VITE_API_BASE` 将 `/api`、`/oauth2`、`/apps` 请求指向 Apisix（localhost:9080）。
+
+**本地开发**（热更新）：
 
 ```bash
 make frontend
@@ -68,7 +73,7 @@ make frontend
 cd frontend && pnpm dev
 ```
 
-前端会在 `http://localhost:5173` 启动，并通过 Vite proxy 将 `/api`、`/oauth2`、`/apps` 请求代理到 Apisix (localhost:9080)。
+前端会在 **http://localhost:5173** 启动，并通过 Vite proxy 将请求代理到 Apisix。
 
 ### 5. 登录
 

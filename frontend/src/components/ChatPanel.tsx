@@ -361,7 +361,18 @@ function getToolResultFromMessage(msg: Message): string {
 }
 
 function ToolCallBlock({ name, args }: { name?: string; args?: Record<string, unknown> }) {
-  const argsStr = args && Object.keys(args).length > 0 ? JSON.stringify(args, null, 2) : null;
+  const argsStr = (() => {
+    if (!args) return null;
+    if ('__raw' in args && typeof args.__raw === 'string') {
+      try {
+        const parsed = JSON.parse(args.__raw);
+        return Object.keys(parsed).length > 0 ? JSON.stringify(parsed, null, 2) : args.__raw || null;
+      } catch {
+        return args.__raw || null;
+      }
+    }
+    return Object.keys(args).length > 0 ? JSON.stringify(args, null, 2) : null;
+  })();
   return (
     <div className="rounded p-2 my-1 bg-gray-100 border-l-2 border-gray-400">
       <div className="font-medium text-xs text-gray-600 mb-0.5">Tool Call: {name ?? '?'}</div>

@@ -34,7 +34,7 @@ from shared.schemas.event import (
     FinishData,
 )
 from agents.agent_factory import create_code_generation_agent, create_team_agent
-from agents.utils import ensure_messages
+from agents.utils import ensure_messages, messages_to_langchain
 from agents.web_app_team.state import create_initial_state
 from agents.context import (
     InMemoryContext,
@@ -74,6 +74,12 @@ def _get_message_id(msg) -> str:
     return getattr(msg, "message_id", None) or getattr(msg, "id", None) or str(uuid.uuid4())
 
 
+def _is_internal_message(msg) -> bool:
+    """检查是否为内部消息（如 prepare 节点的指令），不发送到前端、不持久化。"""
+    kwargs = getattr(msg, "additional_kwargs", None) or {}
+    return bool(kwargs.get("__internal__"))
+
+
 def _get_content_for_event(msg: Message) -> str:
     """从 Message 提取用于 MESSAGE_COMPLETE 事件的 content 字符串。"""
     c = msg.content
@@ -88,6 +94,21 @@ def _get_content_for_event(msg: Message) -> str:
                 texts.append(p.text)
         return " ".join(texts) if texts else ""
     return str(c) if c else ""
+
+
+def _build_message_complete_data(msg: Message) -> dict:
+    """构建 MESSAGE_COMPLETE 事件的完整 data（含 content, role, tool_calls, tool_call_id）。"""
+    data = {
+        "content": _get_content_for_event(msg),
+        "role": msg.role,
+    }
+    if msg.tool_calls:
+        data["tool_calls"] = _normalize_tool_calls(msg.tool_calls)
+    else:
+        data["tool_calls"] = []
+    if msg.tool_call_id is not None:
+        data["tool_call_id"] = msg.tool_call_id
+    return data
 
 
 def _normalize_tool_calls(tool_calls) -> list[dict]:
@@ -468,63 +489,32 @@ async def run_team_agent_with_streaming(
         history_messages: list[langchain_messages.BaseMessage] = []
         n = 100  # 限制历史消息数量
 
-        from agents.context.database import DatabaseMessageStore
+        if last_user_msg is not None:
+            print(f"\n加载历史消息（last_user_msg 之前的 {n} 条）...")
+            messages = await context.message_store.get_session_messages_paginated(
+                session_id=session_id,
+                limit=n,
+                before_message_id=_get_message_id(last_user_msg),
+            )
+        elif last_message_id is None:
+            print(f"\n加载历史消息（最近 {n} 条）...")
+            messages = await context.message_store.get_session_messages_paginated(
+                session_id=session_id,
+                limit=n,
+                last_message_id=None,
+            )
+        else:
+            print(f"\n加载历史消息（从 last_message_id: {last_message_id} 开始，共 {n} 条）...")
+            messages = await context.message_store.get_session_messages_paginated(
+                session_id=session_id,
+                limit=n,
+                last_message_id=last_message_id,
+            )
 
-        if isinstance(context.message_store, DatabaseMessageStore):
-            if last_user_msg is not None:
-                print(f"\n加载历史消息（last_user_msg 之前的 {n} 条）...")
-                messages = await context.message_store.dao.get_session_messages_paginated(
-                    session_id=session_id,
-                    limit=n,
-                    before_message_id=_get_message_id(last_user_msg),
-                )
-            elif last_message_id is None:
-                print(f"\n加载历史消息（最近 {n} 条）...")
-                messages = await context.message_store.dao.get_session_messages_paginated(
-                    session_id=session_id,
-                    limit=n,
-                    last_message_id=None,
-                )
-            else:
-                print(f"\n加载历史消息（从 last_message_id: {last_message_id} 开始，共 {n} 条）...")
-                messages = await context.message_store.dao.get_session_messages_paginated(
-                    session_id=session_id,
-                    limit=n,
-                    last_message_id=last_message_id,
-                )
-
-            # 转换为 LangChain 消息格式
-            from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
-
-            for msg in messages:
-                if msg.role == "user":
-                    history_messages.append(HumanMessage(content=msg.content))
-                elif msg.role == "assistant":
-                    history_messages.append(
-                        AIMessage(
-                            content=msg.content,
-                            tool_calls=(
-                                [
-                                    {
-                                        "type": "tool_call",
-                                        "id": tool_call.get("id"),
-                                        "name": tool_call.get("name"),
-                                        "args": tool_call.get("args"),
-                                    }
-                                    for tool_call in msg.tool_calls
-                                ]
-                                if msg.tool_calls is not None
-                                else []
-                            ),
-                        )
-                    )
-                elif msg.role == "system":
-                    history_messages.append(SystemMessage(content=msg.content))
-                elif msg.role == "tool":
-                    history_messages.append(ToolMessage(content=msg.content, tool_call_id=msg.tool_call_id))
-
-            history_messages = ensure_messages(history_messages)
-            print(f"  已加载 {len(history_messages)} 条历史消息")
+        # 转换为 LangChain 消息格式
+        history_messages = messages_to_langchain(messages)
+        history_messages = ensure_messages(history_messages)
+        print(f"  已加载 {len(history_messages)} 条历史消息")
 
         # 创建初始状态（使用 prompt_for_event，API 层传入 last_user_msg 时 prompt 可能为 None）
         initial_state = create_initial_state(
@@ -545,10 +535,11 @@ async def run_team_agent_with_streaming(
         current_chunk: langchain_messages.AIMessageChunk | None = None
         current_message_node: str | None = None  # 当前消息所属节点（用于 agent_name）
         current_parent_message_id = _get_message_id(user_msg) if user_msg else None
+        current_streaming_message_id: str | None = None  # 与 LLM_STREAM 保持一致的 message_id
 
         async def _save_chunk_and_reset(chunk: langchain_messages.AIMessageChunk | None) -> None:
             """将累积的 chunk 保存为 Message 并重置。"""
-            nonlocal current_chunk, current_message_node, current_parent_message_id
+            nonlocal current_chunk, current_message_node, current_parent_message_id, current_streaming_message_id
             if not chunk or not current_message_node:
                 return
             content = chunk.text if chunk.content else ""
@@ -561,7 +552,7 @@ async def run_team_agent_with_streaming(
                 trace_id=trace_id,
                 agent_name=current_message_node,
                 parent_id=current_parent_message_id,
-                message_id=getattr(chunk, "id", None),
+                message_id=current_streaming_message_id or getattr(chunk, "id", None),
                 tool_calls=getattr(chunk, "tool_calls", None) or [],
                 tool_call_id=None,
             )
@@ -569,7 +560,7 @@ async def run_team_agent_with_streaming(
             evt = create_event(
                 session_id=session_id,
                 event_type=EventType.MESSAGE_COMPLETE,
-                data={"content": content},
+                data=_build_message_complete_data(msg),
                 message_id=msg.message_id,
                 trace_id=trace_id,
                 agent_name=current_message_node,
@@ -578,6 +569,7 @@ async def run_team_agent_with_streaming(
             current_parent_message_id = msg.message_id
             current_chunk = None
             current_message_node = None
+            current_streaming_message_id = None
 
         # 使用 astream 方法异步流式获取更新并立即处理
         # stream_mode 使用 ["updates", "messages"] 来同时获取节点更新和 LLM 消息
@@ -649,7 +641,7 @@ async def run_team_agent_with_streaming(
                         evt = create_event(
                             session_id=session_id,
                             event_type=EventType.MESSAGE_COMPLETE,
-                            data={"content": _get_content_for_event(msg)},
+                            data=_build_message_complete_data(msg),
                             message_id=msg.message_id,
                             trace_id=trace_id,
                             agent_name=node_name,
@@ -754,6 +746,7 @@ async def run_team_agent_with_streaming(
 
                     if not llm_streaming:
                         llm_streaming = True
+                        current_streaming_message_id = chunk_msg_id
                         current_chunk = message_chunk
                         current_message_node = node_name
                     else:
@@ -821,7 +814,7 @@ async def run_team_agent_with_streaming(
                     evt = create_event(
                         session_id=session_id,
                         event_type=EventType.MESSAGE_COMPLETE,
-                        data={"content": _get_content_for_event(tool_msg)},
+                        data=_build_message_complete_data(tool_msg),
                         message_id=tool_msg.message_id,
                         trace_id=trace_id,
                         agent_name=node_name,
@@ -849,7 +842,7 @@ async def run_team_agent_with_streaming(
                     evt = create_event(
                         session_id=session_id,
                         event_type=EventType.MESSAGE_COMPLETE,
-                        data={"content": _get_content_for_event(ai_msg)},
+                        data=_build_message_complete_data(ai_msg),
                         message_id=ai_msg.message_id,
                         trace_id=trace_id,
                         agent_name=node_name,
@@ -859,6 +852,8 @@ async def run_team_agent_with_streaming(
                     parent_message_id = ai_msg.message_id
 
                 elif isinstance(message_chunk, langchain_messages.BaseMessage):
+                    if _is_internal_message(message_chunk):
+                        continue
                     # 其他 BaseMessage 子类（如 ChatMessage 等）
                     await _save_chunk_and_reset(current_chunk)
                     llm_streaming = False
@@ -879,7 +874,7 @@ async def run_team_agent_with_streaming(
                     evt = create_event(
                         session_id=session_id,
                         event_type=EventType.MESSAGE_COMPLETE,
-                        data={"content": _get_content_for_event(other_msg)},
+                        data=_build_message_complete_data(other_msg),
                         message_id=other_msg.message_id,
                         trace_id=trace_id,
                         agent_name=node_name,
@@ -1017,7 +1012,7 @@ async def main():
     )
 
     # 从历史消息获取 prompt：最后一条必须为 user 消息才运行 agent
-    messages = await context.message_store.dao.get_session_messages_paginated(
+    messages = await context.message_store.get_session_messages_paginated(
         session_id=session_id,
         limit=1,
         last_message_id=None,
@@ -1027,6 +1022,22 @@ async def main():
         return
     
     last_user_msg = messages[-1]  # 用于事件关联，API 已存储
+
+    # 从 last_user_msg 提取 prompt 文本（single 模式需要）
+    prompt = ""
+    c = last_user_msg.content
+    if isinstance(c, str):
+        prompt = c
+    elif isinstance(c, list):
+        texts = []
+        for p in c:
+            if isinstance(p, dict) and p.get("type") == "text":
+                texts.append(p.get("text", "") or "")
+            elif hasattr(p, "text") and p.text:
+                texts.append(p.text)
+        prompt = " ".join(texts) if texts else ""
+    else:
+        prompt = str(c) if c else ""
 
     print(f"  Agent Mode: {agent_mode}")
     print(f"  Session: {context.session_id}")

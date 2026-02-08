@@ -147,6 +147,35 @@ class TestAgentContext:
         assert messages[0]["role"] == "user"
         assert messages[0]["content"] == "创建一个待办应用"
 
+    async def test_memory_context_get_session_messages_paginated(self, agent_context):
+        """测试 InMemoryMessageStore.get_session_messages_paginated。"""
+        from shared.schemas import Message
+
+        session_id = agent_context.session_id
+        msgs = [
+            Message(message_id="m1", session_id=session_id, role="user", content="1", timestamp=100.0),
+            Message(message_id="m2", session_id=session_id, role="assistant", content="2", timestamp=101.0),
+            Message(message_id="m3", session_id=session_id, role="user", content="3", timestamp=102.0),
+        ]
+        for m in msgs:
+            await agent_context.message_store.create_message(m)
+
+        # 最近 n 条
+        result = await agent_context.message_store.get_session_messages_paginated(
+            session_id=session_id, limit=2, last_message_id=None
+        )
+        assert len(result) == 2
+        assert result[0].message_id == "m2"
+        assert result[1].message_id == "m3"
+
+        # before m3
+        result = await agent_context.message_store.get_session_messages_paginated(
+            session_id=session_id, limit=2, before_message_id="m3"
+        )
+        assert len(result) == 2
+        assert result[0].message_id == "m1"
+        assert result[1].message_id == "m2"
+
 
 @pytest.mark.asyncio
 class TestRunAgentIntegration:

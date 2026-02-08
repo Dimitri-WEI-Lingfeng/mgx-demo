@@ -138,3 +138,35 @@ class TestEnsureMessages:
         result = ensure_messages(msgs)
         assert len(result) == 3
         assert result[2].content == "next"
+
+    def test_ai_with_tool_calls_without_responses_stripped(self):
+        """AIMessage 含 tool_calls 但无 ToolMessage 响应时，去掉 tool_calls 避免 API 报错。"""
+        msgs = [
+            HumanMessage(content="hi"),
+            AIMessage(
+                content="调用工具",
+                tool_calls=[{"id": "c1", "name": "get_weather", "args": {}}],
+            ),
+            HumanMessage(content="继续"),
+        ]
+        result = ensure_messages(msgs)
+        assert len(result) == 3
+        assert getattr(result[1], "tool_calls", None) == []
+        assert result[1].content == "调用工具"
+
+    def test_ai_with_tool_calls_incomplete_responses_stripped(self):
+        """AIMessage 含多个 tool_calls，但只有部分 ToolMessage 响应时，去掉 tool_calls。"""
+        msgs = [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {"id": "c1", "name": "a", "args": {}},
+                    {"id": "c2", "name": "b", "args": {}},
+                ],
+            ),
+            ToolMessage(content="r1", tool_call_id="c1"),
+            HumanMessage(content="next"),
+        ]
+        result = ensure_messages(msgs)
+        assert len(result) == 2
+        assert getattr(result[0], "tool_calls", None) == []

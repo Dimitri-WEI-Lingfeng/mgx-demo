@@ -37,6 +37,27 @@ class MessageStore(ABC):
         """
         pass
 
+    @abstractmethod
+    async def get_session_messages_paginated(
+        self,
+        session_id: str,
+        limit: int = 100,
+        last_message_id: str | None = None,
+        before_message_id: str | None = None,
+    ) -> list["Message"]:
+        """分页获取会话消息。
+        
+        Args:
+            session_id: 会话 ID
+            limit: 最大条数
+            last_message_id: 游标消息 ID（None 表示最近 n 条）
+            before_message_id: 返回该消息之前的 n 条（不包含该消息）
+        
+        Returns:
+            按时间正序的消息列表
+        """
+        pass
+
 
 class AgentContext(ABC):
     """Agent 上下文抽象基类。

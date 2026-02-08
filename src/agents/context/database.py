@@ -34,6 +34,21 @@ class DatabaseMessageStore(MessageStore):
         """创建消息（写入数据库）。"""
         return await self.dao.create_message(message)
 
+    async def get_session_messages_paginated(
+        self,
+        session_id: str,
+        limit: int = 100,
+        last_message_id: str | None = None,
+        before_message_id: str | None = None,
+    ) -> list[Message]:
+        """分页获取会话消息（委托给 DAO）。"""
+        return await self.dao.get_session_messages_paginated(
+            session_id=session_id,
+            limit=limit,
+            last_message_id=last_message_id,
+            before_message_id=before_message_id,
+        )
+
 
 class DatabaseContext(AgentContext):
     """数据库模式上下文 - 用于生产环境。

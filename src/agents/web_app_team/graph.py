@@ -6,12 +6,70 @@
 import json
 import re
 from typing import Literal
-from langgraph.graph import StateGraph, END
+from langgraph.graph import StateGraph, START, END
 from langgraph.graph.state import CompiledStateGraph
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.language_models import BaseChatModel
 
 from agents.web_app_team.state import TeamState, WorkflowStage, AgentRole
+
+
+def _create_agent_subgraph(
+    agent: CompiledStateGraph,
+    node_name: str,
+    default_prompt: str | None,
+    stage: str | None,
+    extra_return: dict | None = None,
+) -> CompiledStateGraph:
+    """创建以 agent 为 subgraph 节点的包装图，使 astream(subgraphs=True) 能流出 ToolMessage。
+
+    Args:
+        agent: create_agent 返回的图
+        node_name: 节点名（用于 default_prompt 和日志）
+        default_prompt: 默认指令（可含 {framework}），None 时用空字符串
+        stage: current_stage 值，如 WorkflowStage.REQUIREMENT
+        extra_return: 额外返回字段，如 {"prd_document": "prd.md"}
+
+    Returns:
+        编译后的包装图，可直接作为父图节点
+    """
+    extra_return = extra_return or {}
+    default_prompt = default_prompt or ""
+
+    async def prepare_node(state: TeamState) -> dict:
+        instruction = state.get("next_agent_instruction") or default_prompt
+        if "{framework}" in instruction:
+            instruction = instruction.format(framework=state.get("framework", ""))
+        # 仅用于 agent 内部处理，不发送到前端、不持久化
+        msg = HumanMessage(content=instruction, additional_kwargs={"__internal__": True})
+        return {"messages": [msg]}
+
+    def parse_node(state: TeamState) -> dict:
+        # agent 完成后，state 中已有 agent 产出的 messages
+        result = {"messages": state["messages"]}
+        next_action, next_instruction = _parse_workflow_decision(
+            result, node_name, "continue"
+        )
+        next_agent = _resolve_next_agent(node_name, next_action)
+        out = {
+            "next_agent": next_agent,
+            "next_agent_instruction": next_instruction,
+            **extra_return,
+        }
+        if stage:
+            out["current_stage"] = stage
+        return out
+
+    # 子图 state 与 TeamState 共享 messages 等 key
+    sub_builder = StateGraph(TeamState)
+    sub_builder.add_node("prepare", prepare_node)
+    sub_builder.add_node("agent", agent)
+    sub_builder.add_node("parse", parse_node)
+    sub_builder.add_edge(START, "prepare")
+    sub_builder.add_edge("prepare", "agent")
+    sub_builder.add_edge("agent", "parse")
+    sub_builder.add_edge("parse", END)
+    return sub_builder.compile()
 
 # intent 节点可路由到的 agent 列表（用于 LLM 返回解析）
 INTENT_AGENTS = ("boss", "product_manager", "architect", "project_manager", "engineer", "qa")
@@ -242,135 +300,49 @@ def create_team_graph(
             print(f"  Intent LLM 调用失败: {e}，默认路由到 Boss")
             return {"next_agent": AgentRole.BOSS, "next_agent_instruction": None}
     
-    # 定义各个节点函数（async，工具均为 async）
-    async def boss_node(state: TeamState) -> TeamState:
-        """Boss 节点：需求提炼。"""
-        print("\n=== Boss Agent 开始工作 ===")
-
-        default_prompt = DEFAULT_PROMPTS["boss"].format(framework=state["framework"])
-        instruction = state.get("next_agent_instruction") or default_prompt
-        messages = list(state["messages"]) + [HumanMessage(content=instruction)]
-        result = await boss_agent.ainvoke({"messages": messages})
-
-        output_messages = result.get("messages", [])
-        output = output_messages[-1].content if output_messages else ""
-        next_action, next_instruction = _parse_workflow_decision(result, "boss", "continue")
-        next_agent = _resolve_next_agent("boss", next_action)
-
-        return {
-            "messages": [AIMessage(content=f"[Boss] {output}")],
-            "current_stage": WorkflowStage.REQUIREMENT,
-            "next_agent": next_agent,
-            "next_agent_instruction": next_instruction,
-        }
-
-    async def pm_node(state: TeamState) -> TeamState:
-        """Product Manager 节点：编写 PRD。"""
-        print("\n=== Product Manager Agent 开始工作 ===")
-
-        default_prompt = DEFAULT_PROMPTS["product_manager"]
-        instruction = state.get("next_agent_instruction") or default_prompt
-        messages = list(state["messages"]) + [HumanMessage(content=instruction)]
-        result = await pm_agent.ainvoke({"messages": messages})
-
-        output_messages = result.get("messages", [])
-        output = output_messages[-1].content if output_messages else ""
-        next_action, next_instruction = _parse_workflow_decision(result, "product_manager", "continue")
-        next_agent = _resolve_next_agent("product_manager", next_action)
-
-        return {
-            "messages": [AIMessage(content=f"[PM] {output}")],
-            "current_stage": WorkflowStage.DESIGN,
-            "prd_document": "prd.md",
-            "next_agent": next_agent,
-            "next_agent_instruction": next_instruction,
-        }
-
-    async def architect_node(state: TeamState) -> TeamState:
-        """Architect 节点：技术设计。"""
-        print("\n=== Architect Agent 开始工作 ===")
-
-        default_prompt = DEFAULT_PROMPTS["architect"].format(framework=state["framework"])
-        instruction = state.get("next_agent_instruction") or default_prompt
-        messages = list(state["messages"]) + [HumanMessage(content=instruction)]
-        result = await architect_agent.ainvoke({"messages": messages})
-
-        output_messages = result.get("messages", [])
-        output = output_messages[-1].content if output_messages else ""
-        next_action, next_instruction = _parse_workflow_decision(result, "architect", "continue")
-        next_agent = _resolve_next_agent("architect", next_action)
-
-        return {
-            "messages": [AIMessage(content=f"[Architect] {output}")],
-            "design_document": "design.md",
-            "next_agent": next_agent,
-            "next_agent_instruction": next_instruction,
-        }
-
-    async def pjm_node(state: TeamState) -> TeamState:
-        """Project Manager 节点：任务拆解。"""
-        print("\n=== Project Manager Agent 开始工作 ===")
-
-        default_prompt = DEFAULT_PROMPTS["project_manager"]
-        instruction = state.get("next_agent_instruction") or default_prompt
-        messages = list(state["messages"]) + [HumanMessage(content=instruction)]
-        result = await pjm_agent.ainvoke({"messages": messages})
-
-        output_messages = result.get("messages", [])
-        output = output_messages[-1].content if output_messages else ""
-        next_action, next_instruction = _parse_workflow_decision(result, "project_manager", "continue")
-        next_agent = _resolve_next_agent("project_manager", next_action)
-
-        return {
-            "messages": [AIMessage(content=f"[PJM] {output}")],
-            "tasks": [],  # TODO: 解析 tasks.md
-            "next_agent": next_agent,
-            "next_agent_instruction": next_instruction,
-        }
-
-    async def engineer_node(state: TeamState) -> TeamState:
-        """Engineer 节点：代码实现。"""
-        print("\n=== Engineer Agent 开始工作 ===")
-
-        default_prompt = DEFAULT_PROMPTS["engineer"].format(framework=state["framework"])
-        instruction = state.get("next_agent_instruction") or default_prompt
-        messages = list(state["messages"]) + [HumanMessage(content=instruction)]
-        result = await engineer_agent.ainvoke({"messages": messages})
-
-        output_messages = result.get("messages", [])
-        output = output_messages[-1].content if output_messages else ""
-        next_action, next_instruction = _parse_workflow_decision(result, "engineer", "continue")
-        next_agent = _resolve_next_agent("engineer", next_action)
-
-        return {
-            "messages": [AIMessage(content=f"[Engineer] {output}")],
-            "current_stage": WorkflowStage.DEVELOPMENT,
-            "code_changes": [],  # TODO: 跟踪代码变更
-            "next_agent": next_agent,
-            "next_agent_instruction": next_instruction,
-        }
-
-    async def qa_node(state: TeamState) -> TeamState:
-        """QA 节点：测试验证。"""
-        print("\n=== QA Agent 开始工作 ===")
-
-        default_prompt = DEFAULT_PROMPTS["qa"]
-        instruction = state.get("next_agent_instruction") or default_prompt
-        messages = list(state["messages"]) + [HumanMessage(content=instruction)]
-        result = await qa_agent.ainvoke({"messages": messages})
-
-        output_messages = result.get("messages", [])
-        output = output_messages[-1].content if output_messages else ""
-        next_action, next_instruction = _parse_workflow_decision(result, "qa", "continue")
-        next_agent = _resolve_next_agent("qa", next_action)
-
-        return {
-            "messages": [AIMessage(content=f"[QA] {output}")],
-            "current_stage": WorkflowStage.TESTING,
-            "test_results": {},  # TODO: 解析测试结果
-            "next_agent": next_agent,
-            "next_agent_instruction": next_instruction,
-        }
+    # 将各 agent 包装为 subgraph 节点，使 astream(subgraphs=True) 能流出 ToolMessage
+    boss_subgraph = _create_agent_subgraph(
+        boss_agent,
+        "boss",
+        DEFAULT_PROMPTS["boss"],
+        WorkflowStage.REQUIREMENT,
+        extra_return={},
+    )
+    pm_subgraph = _create_agent_subgraph(
+        pm_agent,
+        "product_manager",
+        DEFAULT_PROMPTS["product_manager"],
+        WorkflowStage.DESIGN,
+        extra_return={"prd_document": "prd.md"},
+    )
+    architect_subgraph = _create_agent_subgraph(
+        architect_agent,
+        "architect",
+        DEFAULT_PROMPTS["architect"],
+        None,
+        extra_return={"design_document": "design.md"},
+    )
+    pjm_subgraph = _create_agent_subgraph(
+        pjm_agent,
+        "project_manager",
+        DEFAULT_PROMPTS["project_manager"],
+        None,
+        extra_return={"tasks": []},
+    )
+    engineer_subgraph = _create_agent_subgraph(
+        engineer_agent,
+        "engineer",
+        DEFAULT_PROMPTS["engineer"],
+        WorkflowStage.DEVELOPMENT,
+        extra_return={"code_changes": []},
+    )
+    qa_subgraph = _create_agent_subgraph(
+        qa_agent,
+        "qa",
+        DEFAULT_PROMPTS["qa"],
+        WorkflowStage.TESTING,
+        extra_return={"test_results": {}},
+    )
     
     # 路由函数：决定下一个执行的节点
     def router(state: TeamState) -> Literal["boss", "product_manager", "architect", "project_manager", "engineer", "qa", END]:
@@ -392,14 +364,14 @@ def create_team_graph(
     # 构建图
     workflow = StateGraph(TeamState)
     
-    # 添加节点
+    # 添加节点（boss/pm/architect 等为 subgraph，使 stream 能流出 ToolMessage）
     workflow.add_node("intent", intent_node)
-    workflow.add_node("boss", boss_node)
-    workflow.add_node("product_manager", pm_node)
-    workflow.add_node("architect", architect_node)
-    workflow.add_node("project_manager", pjm_node)
-    workflow.add_node("engineer", engineer_node)
-    workflow.add_node("qa", qa_node)
+    workflow.add_node("boss", boss_subgraph)
+    workflow.add_node("product_manager", pm_subgraph)
+    workflow.add_node("architect", architect_subgraph)
+    workflow.add_node("project_manager", pjm_subgraph)
+    workflow.add_node("engineer", engineer_subgraph)
+    workflow.add_node("qa", qa_subgraph)
     
     # 设置入口点：intent 优先
     workflow.set_entry_point("intent")
