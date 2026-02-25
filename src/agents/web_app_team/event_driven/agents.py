@@ -248,7 +248,11 @@ class QAAgent(EventDrivenAgent):
             ),
         ]
 
-        has_failure = "fail" in content.lower() or "error" in content.lower()
+        lower = content.lower()
+        has_failure = (
+            ("test failed" in lower or "tests failed" in lower or "failure" in lower)
+            and "passed" not in lower
+        ) or ("error" in lower and "no error" not in lower and "passed" not in lower)
         if has_failure:
             events.append(
                 self._make_event(

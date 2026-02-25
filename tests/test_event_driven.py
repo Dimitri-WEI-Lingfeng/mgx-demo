@@ -153,11 +153,11 @@ class TestEventBus:
         received_by = []
 
         async def handler_a(event: TeamEvent):
-            received_by.append("a")
+            received_by.append("agent_a")
             return None
 
         async def handler_b(event: TeamEvent):
-            received_by.append("b")
+            received_by.append("agent_b")
             return None
 
         bus.subscribe(TeamEventType.SEND_TO_AGENT, handler_a, agent_name="agent_a")
