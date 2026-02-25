@@ -151,7 +151,7 @@ export function SessionsListPage() {
             className="w-full max-w-md shadow-xl"
             okText="创建"
             cancelText="取消"
-            onOk={() => handleCreateSession(name)}
+            onOk={() => handleCreateSession({name, framework})}
           >
             
               <Space direction="vertical" className="w-full" size="middle">
