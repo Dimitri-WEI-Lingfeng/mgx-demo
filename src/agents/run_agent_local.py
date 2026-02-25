@@ -80,6 +80,57 @@ async def run_local_agent(
     
   
 
+async def run_local_event_driven(
+    prompt: str,
+    framework: str = "nextjs",
+    context: InMemoryContext | None = None,
+):
+    """在本地运行事件驱动 agent。
+
+    Args:
+        prompt: 用户需求描述
+        framework: 目标框架
+        context: 内存上下文
+    """
+    if context is None:
+        raise ValueError("context 不能为 None")
+
+    set_context(context)
+
+    print(f"\n{'='*60}")
+    print(f"事件驱动 Agent 运行环境")
+    print(f"{'='*60}")
+    print(f"Session ID: {context.session_id}")
+    print(f"Workspace ID: {context.workspace_id}")
+    print(f"Workspace Path: {context.get_workspace_path()}")
+    print(f"Framework: {framework}")
+    print(f"{'='*60}\n")
+
+    from agents.agent_factory import create_event_driven_team_agent
+
+    orchestrator = create_event_driven_team_agent(
+        framework=framework,
+        workspace_id=context.workspace_id,
+    )
+
+    async def _print_team_event(team_event):
+        print(f"  [TeamEvent] {team_event.event_type.value} from={team_event.source_agent}" +
+              (f" -> {team_event.target_agent}" if team_event.target_agent else ""))
+
+    orchestrator.on_team_event(_print_team_event)
+
+    result = await orchestrator.run(prompt=prompt)
+
+    print(f"\n{'='*60}")
+    print(f"执行结果: {result.get('status')}")
+    print(f"事件数量: {result.get('event_count', 0)}")
+    if result.get("error"):
+        print(f"错误: {result['error']}")
+    print(f"{'='*60}\n")
+
+    return result
+
+
 async def main():
     """主函数 - 演示示例。"""
     import argparse
@@ -98,6 +149,12 @@ async def main():
         "--workspace", "-w",
         help="工作区路径（可选）",
         default=default_path
+    )
+    parser.add_argument(
+        "--mode", "-m",
+        default="team",
+        choices=["team", "event_driven"],
+        help="运行模式：team（顺序）或 event_driven（事件驱动）",
     )
    
     
@@ -128,12 +185,19 @@ async def main():
 
     try:
         async with context:
-            result = await run_local_agent(
-                prompt=args.prompt,
-                framework=args.framework,
-                context=context,
-                workspace_path=workspace_path,
-            )
+            if args.mode == "event_driven":
+                result = await run_local_event_driven(
+                    prompt=args.prompt,
+                    framework=args.framework,
+                    context=context,
+                )
+            else:
+                result = await run_local_agent(
+                    prompt=args.prompt,
+                    framework=args.framework,
+                    context=context,
+                    workspace_path=workspace_path,
+                )
             
             if result is None:
                 sys.exit(1)

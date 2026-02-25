@@ -982,6 +982,140 @@ async def run_team_agent_with_streaming(
         }
 
 
+async def run_event_driven_team(
+    context: AgentContext,
+    framework: str,
+    prompt: str,
+    trace_id: str | None = None,
+):
+    """运行事件驱动的团队 agent。
+
+    Args:
+        context: AgentContext 实例
+        framework: 目标框架
+        prompt: 用户提示词
+        trace_id: 可选的 trace ID
+
+    Returns:
+        dict: 结果包含状态和事件信息
+    """
+    set_context(context)
+
+    session_id = context.session_id
+    workspace_id = context.workspace_id
+
+    # 发送 agent_start 事件
+    event = create_event(
+        session_id=session_id,
+        event_type=EventType.AGENT_START,
+        data={"prompt": prompt, "framework": framework, "mode": "event_driven"},
+        trace_id=trace_id,
+        agent_name="event_driven_team",
+    )
+    await context.event_store.create_event(event)
+
+    try:
+        from agents.agent_factory import create_event_driven_team_agent
+
+        callbacks = []
+        if settings.langfuse_enabled and settings.langfuse_public_key:
+            try:
+                from langfuse.callback import CallbackHandler as LangfuseCallbackHandler
+                langfuse_handler = LangfuseCallbackHandler(
+                    public_key=settings.langfuse_public_key,
+                    secret_key=settings.langfuse_secret_key,
+                    host=settings.langfuse_host,
+                    session_id=session_id,
+                    tags=["agent", "event_driven", framework],
+                )
+                callbacks.append(langfuse_handler)
+                if not trace_id and hasattr(langfuse_handler, "trace_id"):
+                    trace_id = langfuse_handler.trace_id
+            except Exception as e:
+                print(f"Failed to initialize langfuse: {e}")
+
+        orchestrator = create_event_driven_team_agent(
+            framework=framework,
+            workspace_id=workspace_id,
+            callbacks=callbacks,
+        )
+
+        async def _bridge_team_event_to_sse(team_event):
+            """将 TeamEvent 桥接到 SSE Event。"""
+            from agents.web_app_team.event_driven.team_events import TeamEventType as TET
+            evt = create_event(
+                session_id=session_id,
+                event_type=EventType.CUSTOM,
+                data={
+                    "team_event_type": team_event.event_type.value,
+                    "source_agent": team_event.source_agent,
+                    "target_agent": team_event.target_agent,
+                    "payload_keys": list(team_event.payload.keys()),
+                },
+                trace_id=trace_id,
+                agent_name=team_event.source_agent,
+            )
+            await context.event_store.create_event(evt)
+
+        orchestrator.on_team_event(_bridge_team_event_to_sse)
+
+        result = await orchestrator.run(prompt=prompt)
+
+        # 发送 finish 事件
+        finish_event = create_event(
+            session_id=session_id,
+            event_type=EventType.FINISH,
+            data={"status": result.get("status", "success")},
+            trace_id=trace_id,
+            agent_name="event_driven_team",
+        )
+        await context.event_store.create_event(finish_event)
+
+        if callbacks:
+            for callback in callbacks:
+                if hasattr(callback, "flush"):
+                    callback.flush()
+
+        return {
+            "session_id": session_id,
+            "workspace_id": workspace_id,
+            "status": result.get("status", "success"),
+            "error": result.get("error"),
+            "event_count": result.get("event_count", 0),
+            "changed_files": [],
+        }
+
+    except Exception as e:
+        error_details = traceback.format_exc()
+        print(f"Error in event-driven team: {error_details}")
+
+        error_event = create_event(
+            session_id=session_id,
+            event_type=EventType.AGENT_ERROR,
+            data={"error": str(e), "error_type": type(e).__name__, "details": error_details},
+            trace_id=trace_id,
+            agent_name="event_driven_team",
+        )
+        await context.event_store.create_event(error_event)
+
+        finish_event = create_event(
+            session_id=session_id,
+            event_type=EventType.FINISH,
+            data={"status": "error", "error": str(e)},
+            trace_id=trace_id,
+            agent_name="event_driven_team",
+        )
+        await context.event_store.create_event(finish_event)
+
+        return {
+            "session_id": session_id,
+            "workspace_id": workspace_id,
+            "status": "failed",
+            "error": str(e),
+            "changed_files": [],
+        }
+
+
 async def main():
     """主入口函数，从环境变量读取参数并运行 agent。"""
     # 从环境变量读取参数
@@ -989,8 +1123,8 @@ async def main():
     trace_id = os.environ.get("TRACE_ID")
     last_message_id = os.environ.get("LAST_MESSAGE_ID")  # 可选的上一条消息 ID
 
-    # 决定运行模式：database（默认）或 memory
-    agent_mode = os.environ.get("AGENT_MODE", "team")  # team or single
+    # 决定运行模式：team（顺序）、event_driven（事件驱动）、single
+    agent_mode = os.environ.get("AGENT_MODE", "team")  # team, event_driven, or single
 
     # 数据库模式：用于生产环境
     session_id = os.environ.get("SESSION_ID")
@@ -1048,7 +1182,14 @@ async def main():
 
     try:
         # 根据模式运行不同的 agent
-        if agent_mode == "team":
+        if agent_mode == "event_driven":
+            result = await run_event_driven_team(
+                context=context,
+                framework=framework,
+                prompt=prompt,
+                trace_id=trace_id,
+            )
+        elif agent_mode == "team":
             result = await run_team_agent_with_streaming(
                 context=context,
                 framework=framework,

@@ -114,7 +114,7 @@ def create_team_agent(
     framework: str,
     callbacks: list[Any] | None = None,
 ) -> CompiledStateGraph:
-    """Create a multi-agent team for web app development.
+    """Create a multi-agent team for web app development (LangGraph sequential mode).
     
     Args:
         framework: Target framework (nextjs, fastapi-vite)
@@ -130,5 +130,32 @@ def create_team_agent(
     
     return create_web_app_team(
         framework=framework,
+        callbacks=callbacks,
+    )
+
+
+def create_event_driven_team_agent(
+    framework: str,
+    workspace_id: str = "",
+    callbacks: list[Any] | None = None,
+):
+    """Create an event-driven multi-agent team for web app development.
+
+    Args:
+        framework: Target framework (nextjs, fastapi-vite)
+        workspace_id: Workspace ID
+        callbacks: Optional callback handlers (e.g., langfuse)
+
+    Returns:
+        EventDrivenOrchestrator instance
+
+    Note:
+        需要通过 context.set_context() 设置 AgentContext 后才能使用
+    """
+    from agents.web_app_team.event_driven.team_factory import create_event_driven_team
+
+    return create_event_driven_team(
+        framework=framework,
+        workspace_id=workspace_id,
         callbacks=callbacks,
     )
